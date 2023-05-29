@@ -2,7 +2,8 @@ from abc import abstractmethod
 import torch
 import typing as tp
 from dataclasses import dataclass
-
+import numpy as np
+from scipy.spatial.distance import euclidian
 
 
 @dataclass
@@ -16,8 +17,8 @@ class ClassifierArgs:
     """
     # we will use this to give an absolute path to the data, make sure you read the data using this argument. 
     # you may assume the train data is the same
-    path_to_training_data_dir: str = "./train_files" 
-    
+    path_to_training_data_dir: str = "./train_files"
+
     # you may add other args here
 
 
@@ -25,6 +26,7 @@ class DigitClassifier():
     """
     You should Implement your classifier object here
     """
+
     def __init__(self, args: ClassifierArgs):
         self.path_to_training_data = args.path_to_training_data_dir
 
@@ -36,7 +38,7 @@ class DigitClassifier():
         return: list of predicted label for each batch entry
         """
         raise NotImplementedError("function is not implemented")
-    
+
     @abstractmethod
     def classify_using_DTW_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
         """
@@ -45,7 +47,6 @@ class DigitClassifier():
         return: list of predicted label for each batch entry
         """
         raise NotImplementedError("function is not implemented")
-
 
     @abstractmethod
     def classify(self, audio_files: tp.List[str]) -> tp.List[str]:
@@ -56,7 +57,29 @@ class DigitClassifier():
         Note: filename should not include parent path, but only the file name itself.
         """
         raise NotImplementedError("function is not implemented")
-    
+
+    def DTW_distance(self, mfcc_1: np.ndarray, mfcc_2: np.ndarray):
+
+        n = len(mfcc_1)
+        m = len(mfcc_2)
+        distance_matrix = np.zeros((n, m))
+        for i in range(n):
+            for j in range(m):
+                distance_matrix[i, j] = euclidian(mfcc_1[i],
+                                                  mfcc_2[j])  # TODO check if the dimensions of the mfcc's makes sense
+
+        # find optimal path
+        DTW_path = []
+        i, j = (0, 0)
+        while i < n - 1 and j < m - 1:
+            neighbors = [(i + 1, j), (i, j + 1), (i + 1, j + 1)]
+            distances = [distance_matrix[p] for p in neighbors]
+            minimal_step_index = np.argmin(distances)
+            i, j = neighbors[minimal_step_index]
+            DTW_path.append((i, j))
+
+        return sum([distance_matrix[p] for p in DTW_path])
+
 
 class ClassifierHandler:
 
