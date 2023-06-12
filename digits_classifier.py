@@ -28,6 +28,27 @@ def list_test_files(test_set_path):
 
     return test_files_list
 
+######### TODO - tmp #######################
+import pandas as pd
+def evaluate(euclidean_results, dtw_results):
+    # evaluation
+    test_GT_labels_df = pd.read_csv("test_labels")
+
+    # parse GT labels
+    GT_labels = []
+    GT_filelist = list(test_GT_labels_df['filename'])
+    for tf in test_list:
+        idx = GT_filelist.index(tf.split("/")[-1])
+        GT_labels.append(test_GT_labels_df['label'][idx])
+
+    # evaluate
+    GT_labels = np.array(GT_labels)
+    euclidean_preds = np.array(euclidean_results)
+
+    valid_GT_idxs = GT_labels > -1
+    euc_accuracy = np.mean(euclidean_preds[valid_GT_idxs] == GT_labels[valid_GT_idxs])
+    print(f'euc accuracy: {euc_accuracy}')
+###########################################################
 
 @dataclass
 class ClassifierArgs:
@@ -121,7 +142,7 @@ class DigitClassifier():
 
 
     @abstractmethod
-    def classify_using_eucledian_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
+    def classify_using_euclidean_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
         """
         function to classify a given audio using auclidean distance
         audio_files: list of audio file paths or a a batch of audio files of shape [Batch, Channels, Time]
@@ -182,13 +203,22 @@ class DigitClassifier():
 
         return_list = list()
         x, sr = self.load_audio_files(audio_files)
-        eucledian_results = self.classify_using_eucledian_distance(x)
-        dtw_results = self.classify_using_DTW_distance(x)
+        euclidean_results = self.classify_using_euclidean_distance(x)
+
+        DTW_IS_IMPLEMENTED = False
+        if DTW_IS_IMPLEMENTED:
+            dtw_results = self.classify_using_DTW_distance(x)
+        else:
+            dtw_results = euclidean_results
 
         for i, audio_file in enumerate(audio_files):
             return_list.append(
-                f"{audio_file} - {dtw_results[i]} - {eucledian_results[i]}"
+                f"{audio_file} - {dtw_results[i]} - {euclidean_results[i]}"
             )
+
+        ### TODO - TMP #####
+        evaluate(euclidean_results, dtw_results)
+        ####################
 
         return return_list
 
