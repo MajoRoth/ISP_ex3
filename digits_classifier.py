@@ -5,7 +5,8 @@ import typing as tp
 from dataclasses import dataclass
 import numpy as np
 import librosa
-from scipy.spatial.distance import euclidian
+from scipy.spatial import distance
+import torchaudio
 
 numbers_translate = {
     "one": 1,
@@ -14,6 +15,19 @@ numbers_translate = {
     "four": 4,
     "five": 5
 }
+
+
+def list_test_files(test_set_path):
+    test_files_list = []
+    basedir = os.path.abspath(test_set_path)
+    for file in os.listdir(basedir):
+        if not file.endswith(".wav"):
+            continue
+        fullpath = os.path.join(basedir, file)
+        test_files_list.append(fullpath)
+
+    return test_files_list
+
 
 @dataclass
 class ClassifierArgs:
@@ -36,39 +50,74 @@ class DigitClassifier():
     You should Implement your classifier object here
     """
 
+    class TrainData():
+        def __init__(self):
+            self.features = None # mfcc features - [Batch, Channels, n_mfccs, n_frames]
+            self.labels = None # 1,2,3,4,5 digits
+
     def __init__(self, args: ClassifierArgs):
         self.path_to_training_data = args.path_to_training_data_dir
-        self.train_data_dict = dict()  # dict with 1,2,3,4,5 as keys, and values are lists with mfccs
+        self.sr = None
+        self.calc_train_features()
 
-        train_files = os.listdir(self.path_to_training_data)
-        for number_dir in train_files:
+    def load_audio_files(self, audio_files: tp.List[str]):
+        y_all = None
+        for audio_f in audio_files:
+            y, sr = torchaudio.load(audio_f)
+            if y_all is None:
+                y_all = y.unsqueeze(0)
+            else:
+                y_all = torch.cat((y_all, y.unsqueeze(0)), dim=0)
+        return y_all, sr # [Batch, Channels, Time]
+
+    # def get_mfcc(self, wav_path: tp.Union[tp.List[str], str]):
+    #     """
+    #     gets a single str or list of str and returns the mfccs
+    #     :param wav_path:
+    #     :return:
+    #     """
+    #     if type(wav_path) is list:
+    #         mfcc_list = list()
+    #         for wav in wav_path:
+    #             y, sr = librosa.load(wav, sr=None)
+    #             assert sr == self.sr
+    #             mfcc_list.append(librosa.feature.mfcc(y=y, sr=sr))
+    #         return mfcc_list
+    #
+    #     y, sr = librosa.load(wav_path, sr=None)
+    #     assert sr == self.sr
+    #     return librosa.feature.mfcc(y=y, sr=sr), sr
+
+    def calc_train_features(self):
+        self.train_ds = self.TrainData()
+
+        train_subdirs = os.listdir(self.path_to_training_data)
+
+
+        for number_dir in train_subdirs:
             number_dir_path = os.path.join(self.path_to_training_data, number_dir)
             if os.path.isdir(number_dir_path):
-                self.train_data_dict[numbers_translate[number_dir]] = list()
                 wavs = os.listdir(number_dir_path)
                 for wav in wavs:
-                    if wav.endswith(".wav"):
-                        wav_path = os.path.join(number_dir_path, wav)
-                        self.train_data_dict[numbers_translate[number_dir]].append(self.get_mfcc(wav_path))
+                    if not wav.endswith(".wav"):
+                        continue
+                    wav_path = os.path.join(number_dir_path, wav)
+                    y, sr = torchaudio.load(wav_path)
+                    if self.sr is None:
+                        self.sr = sr
+                    features = librosa.feature.mfcc(y=y.numpy(), sr=sr)
+                    label = numbers_translate[number_dir]
+                    if self.train_ds.features is None:
+                        self.train_ds.features = np.expand_dims(features, 0)
+                        self.train_ds.labels = [label]
+                    else:
+                        self.train_ds.features = np.concatenate((self.train_ds.features, np.expand_dims(features, 0)), axis=0)
+                        self.train_ds.labels.append(label)
 
-        #  print(self.train_data_dict)
-
-    def get_mfcc(self, wav_path: tp.Union[tp.List[str], str]):
-        """
-        gets a single str or list of str and returns the mfccs
-        :param wav_path:
-        :return:
-        """
-        if type(wav_path) is list:
-            mfcc_list = list()
-            for wav in wav_path:
-                y, sr = librosa.load(wav, sr=None)
-                mfcc_list.append(librosa.feature.mfcc(y=y, sr=sr))
-            return mfcc_list
-
-        y, sr = librosa.load(wav_path, sr=None)
-        return librosa.feature.mfcc(y=y, sr=sr)
-
+        # convert to torch.Tensor
+        if self.train_ds.features is not None:
+            self.train_ds.features = torch.from_numpy(self.train_ds.features)
+            self.train_ds.labels = torch.tensor(self.train_ds.labels)
 
 
     @abstractmethod
@@ -78,7 +127,39 @@ class DigitClassifier():
         audio_files: list of audio file paths or a a batch of audio files of shape [Batch, Channels, Time]
         return: list of predicted label for each batch entry
         """
-        raise NotImplementedError("function is not implemented")
+
+        # calc test features
+        x_mfccs = librosa.feature.mfcc(y=audio_files.numpy(), sr=self.sr) # [Batch, Channels, n_mfccs, n_frames]
+        x_mfccs = torch.from_numpy(x_mfccs)
+
+        # rearrange
+        n_test_samples, ch, n_mfccs, n_frames = x_mfccs.shape
+        x_mfccs = x_mfccs.permute(1, 0, 2, 3)
+
+        n_train_samples, ch_, n_mfccs_, n_frames_ = self.train_ds.features.shape
+        assert ch_ == ch and n_mfccs_ == n_mfccs_ and n_frames_ == n_frames
+
+        train_feats = self.train_ds.features.permute(1, 0, 2, 3)
+
+        # for each temporal mfcc frame - calc pairwise distances
+        all_pair_wise_dists = None
+        for t in range(n_frames):
+            pair_wise_dists = torch.cdist(x_mfccs[:, :, :, t], train_feats[:, :, :, t])
+            if all_pair_wise_dists is None:
+                all_pair_wise_dists = pair_wise_dists.unsqueeze(0)
+            else:
+                all_pair_wise_dists = torch.cat((all_pair_wise_dists, pair_wise_dists.unsqueeze(0)), dim=0)
+
+        # calc mean dist for each test-train pair (over the temporal dimension)
+        mean_dists = all_pair_wise_dists.mean(dim=0).mean(dim=0) # mean over temporal dim and over audio channels
+
+        # mean_dists dim is now [n_test_examples, n_train_examples]
+        # For each test example, classify by the minimal distance from train examples
+        nn_idx = torch.argmin(mean_dists, dim=1)
+        pred_labels = self.train_ds.labels[nn_idx]
+
+        return pred_labels.tolist()
+
 
     @abstractmethod
     def classify_using_DTW_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
@@ -100,9 +181,9 @@ class DigitClassifier():
         """
 
         return_list = list()
-
-        dtw_results = self.classify_using_DTW_distance(self.get_mfcc(audio_files))
-        eucledian_results = self.classify_using_DTW_distance(self.get_mfcc(audio_files))
+        x, sr = self.load_audio_files(audio_files)
+        eucledian_results = self.classify_using_eucledian_distance(x)
+        dtw_results = self.classify_using_DTW_distance(x)
 
         for i, audio_file in enumerate(audio_files):
             return_list.append(
@@ -110,7 +191,6 @@ class DigitClassifier():
             )
 
         return return_list
-
 
     def DTW_distance(self, mfcc_1: np.ndarray, mfcc_2: np.ndarray):
         # todo - i didn't check if this function works correctly
@@ -120,7 +200,7 @@ class DigitClassifier():
         distance_matrix = np.zeros((n, m))
         for i in range(n):
             for j in range(m):
-                distance_matrix[i, j] = euclidian(mfcc_1[i],
+                distance_matrix[i, j] = distance.euclidian(mfcc_1[i],
                                                   mfcc_2[j])  # TODO check if the dimensions of the mfcc's makes sense
 
         # find optimal path
@@ -151,3 +231,6 @@ if __name__ == '__main__':
     ca = ClassifierArgs()
     ca.path_to_training_data_dir = "./train_files"
     dc = DigitClassifier(ca)
+    test_list = list_test_files("./test_files")
+    classification_res = dc.classify(test_list)
+    print('completed')
