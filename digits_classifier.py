@@ -7,6 +7,7 @@ import numpy as np
 import librosa
 from scipy.spatial import distance
 import torchaudio
+from dtw import dtw
 
 numbers_translate = {
     "one": 1,
@@ -28,11 +29,12 @@ def list_test_files(test_set_path):
 
     return test_files_list
 
+
 ######### TODO - tmp #######################
 import pandas as pd
 def evaluate(euclidean_results, dtw_results):
     # evaluation
-    test_GT_labels_df = pd.read_csv("test_labels")
+    test_GT_labels_df = pd.read_csv("test_labels.csv")
 
     # parse GT labels
     GT_labels = []
@@ -44,10 +46,15 @@ def evaluate(euclidean_results, dtw_results):
     # evaluate
     GT_labels = np.array(GT_labels)
     euclidean_preds = np.array(euclidean_results)
+    dtw_preds = np.array(dtw_results)
 
     valid_GT_idxs = GT_labels > -1
     euc_accuracy = np.mean(euclidean_preds[valid_GT_idxs] == GT_labels[valid_GT_idxs])
+    dtw_accuracy = np.mean(dtw_preds[valid_GT_idxs] == GT_labels[valid_GT_idxs])
+
+    print("classify")
     print(f'euc accuracy: {euc_accuracy}')
+    print(f'dtw accuracy: {dtw_accuracy}')
 ###########################################################
 
 @dataclass
@@ -189,7 +196,31 @@ class DigitClassifier():
         audio_files: list of audio file paths or a a batch of audio files of shape [Batch, Channels, Time]
         return: list of predicted label for each batch entry
         """
-        raise NotImplementedError("function is not implemented")
+
+        # calc test features
+        x_mfccs = librosa.feature.mfcc(y=audio_files.numpy(), sr=self.sr)  # [Batch, Channels, n_mfccs, n_frames]
+
+        # rearrange
+        n_test_samples, ch, n_mfccs, n_frames = x_mfccs.shape
+
+        n_train_samples, ch_, n_mfccs_, n_frames_ = self.train_ds.features.shape
+
+        assert ch_ == ch and n_mfccs_ == n_mfccs_ and n_frames_ == n_frames
+
+
+        # for each temporal mfcc frame - calc pairwise distances
+        all_pair_wise_dists = DigitClassifier.DTWdist(x_mfccs, self.train_ds.features.numpy())
+
+        # calc mean dist for each test-train pair (over the temporal dimension)
+
+        # mean_dists dim is now [n_test_examples, n_train_examples]
+        # For each test example, classify by the minimal distance from train examples
+        nn_idx = torch.argmin(torch.from_numpy(all_pair_wise_dists), dim=1)
+        pred_labels = self.train_ds.labels[nn_idx]
+
+
+        return pred_labels.tolist()
+
 
 
     @abstractmethod
@@ -205,7 +236,7 @@ class DigitClassifier():
         x, sr = self.load_audio_files(audio_files)
         euclidean_results = self.classify_using_euclidean_distance(x)
 
-        DTW_IS_IMPLEMENTED = False
+        DTW_IS_IMPLEMENTED = True
         if DTW_IS_IMPLEMENTED:
             dtw_results = self.classify_using_DTW_distance(x)
         else:
@@ -222,28 +253,49 @@ class DigitClassifier():
 
         return return_list
 
-    def DTW_distance(self, mfcc_1: np.ndarray, mfcc_2: np.ndarray):
-        # todo - i didn't check if this function works correctly
+    @staticmethod
+    def DTWdist(batch_1, batch_2):
+        """
+        Calculating batched DTW metric
+        :param x1:
+        :param x2:
+        :return:
+        """
 
-        n = len(mfcc_1)
-        m = len(mfcc_2)
-        distance_matrix = np.zeros((n, m))
+        n = batch_1.shape[0]
+        m = batch_2.shape[0]
+
+        return_dist = np.zeros((n, m))
+
         for i in range(n):
             for j in range(m):
-                distance_matrix[i, j] = distance.euclidian(mfcc_1[i],
-                                                  mfcc_2[j])  # TODO check if the dimensions of the mfcc's makes sense
+                return_dist[i, j], _, _, _ = dtw(batch_1[i], batch_2[j], dist=lambda x, y: np.linalg.norm(x - y, ord=1))
 
-        # find optimal path
-        DTW_path = []
-        i, j = (0, 0)
-        while i < n - 1 and j < m - 1:
-            neighbors = [(i + 1, j), (i, j + 1), (i + 1, j + 1)]
-            distances = [distance_matrix[p] for p in neighbors]
-            minimal_step_index = np.argmin(distances)
-            i, j = neighbors[minimal_step_index]
-            DTW_path.append((i, j))
+        return return_dist
 
-        return sum([distance_matrix[p] for p in DTW_path])
+
+    # def DTW_distance(self, mfcc_1: np.ndarray, mfcc_2: np.ndarray):
+    #     # todo - i didn't check if this function works correctly
+    #
+    #     n = len(mfcc_1)
+    #     m = len(mfcc_2)
+    #     distance_matrix = np.zeros((n, m))
+    #     for i in range(n):
+    #         for j in range(m):
+    #             distance_matrix[i, j] = distance.euclidian(mfcc_1[i],
+    #                                               mfcc_2[j])  # TODO check if the dimensions of the mfcc's makes sense
+    #
+    #     # find optimal path
+    #     DTW_path = []
+    #     i, j = (0, 0)
+    #     while i < n - 1 and j < m - 1:
+    #         neighbors = [(i + 1, j), (i, j + 1), (i + 1, j + 1)]
+    #         distances = [distance_matrix[p] for p in neighbors]
+    #         minimal_step_index = np.argmin(distances)
+    #         i, j = neighbors[minimal_step_index]
+    #         DTW_path.append((i, j))
+    #
+    #     return sum([distance_matrix[p] for p in DTW_path])
 
 
 class ClassifierHandler:
