@@ -5,7 +5,6 @@ import typing as tp
 from dataclasses import dataclass
 import numpy as np
 import librosa
-from scipy.spatial import distance
 import torchaudio
 from dtw import dtw
 
@@ -32,6 +31,8 @@ def list_test_files(test_set_path):
 
 ######### TODO - tmp #######################
 import pandas as pd
+
+
 def evaluate(euclidean_results, dtw_results):
     # evaluation
     test_GT_labels_df = pd.read_csv("test_labels.csv")
@@ -55,6 +56,8 @@ def evaluate(euclidean_results, dtw_results):
     print("classify")
     print(f'euc accuracy: {euc_accuracy}')
     print(f'dtw accuracy: {dtw_accuracy}')
+
+
 ###########################################################
 
 @dataclass
@@ -73,15 +76,15 @@ class ClassifierArgs:
     # you may add other args here
 
 
-class DigitClassifier():
+class DigitClassifier:
     """
     You should Implement your classifier object here
     """
 
-    class TrainData():
+    class TrainData:
         def __init__(self):
-            self.features = None # mfcc features - [Batch, Channels, n_mfccs, n_frames]
-            self.labels = None # 1,2,3,4,5 digits
+            self.features = None  # mfcc features - [Batch, Channels, n_mfccs, n_frames]
+            self.labels = None  # 1,2,3,4,5 digits
 
     def __init__(self, args: ClassifierArgs):
         self.path_to_training_data = args.path_to_training_data_dir
@@ -96,31 +99,12 @@ class DigitClassifier():
                 y_all = y.unsqueeze(0)
             else:
                 y_all = torch.cat((y_all, y.unsqueeze(0)), dim=0)
-        return y_all, sr # [Batch, Channels, Time]
-
-    # def get_mfcc(self, wav_path: tp.Union[tp.List[str], str]):
-    #     """
-    #     gets a single str or list of str and returns the mfccs
-    #     :param wav_path:
-    #     :return:
-    #     """
-    #     if type(wav_path) is list:
-    #         mfcc_list = list()
-    #         for wav in wav_path:
-    #             y, sr = librosa.load(wav, sr=None)
-    #             assert sr == self.sr
-    #             mfcc_list.append(librosa.feature.mfcc(y=y, sr=sr))
-    #         return mfcc_list
-    #
-    #     y, sr = librosa.load(wav_path, sr=None)
-    #     assert sr == self.sr
-    #     return librosa.feature.mfcc(y=y, sr=sr), sr
+        return y_all, sr  # [Batch, Channels, Time]
 
     def calc_train_features(self):
         self.train_ds = self.TrainData()
 
         train_subdirs = os.listdir(self.path_to_training_data)
-
 
         for number_dir in train_subdirs:
             number_dir_path = os.path.join(self.path_to_training_data, number_dir)
@@ -139,14 +123,14 @@ class DigitClassifier():
                         self.train_ds.features = np.expand_dims(features, 0)
                         self.train_ds.labels = [label]
                     else:
-                        self.train_ds.features = np.concatenate((self.train_ds.features, np.expand_dims(features, 0)), axis=0)
+                        self.train_ds.features = np.concatenate((self.train_ds.features, np.expand_dims(features, 0)),
+                                                                axis=0)
                         self.train_ds.labels.append(label)
 
         # convert to torch.Tensor
         if self.train_ds.features is not None:
             self.train_ds.features = torch.from_numpy(self.train_ds.features)
             self.train_ds.labels = torch.tensor(self.train_ds.labels)
-
 
     @abstractmethod
     def classify_using_euclidean_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
@@ -157,7 +141,7 @@ class DigitClassifier():
         """
 
         # calc test features
-        x_mfccs = librosa.feature.mfcc(y=audio_files.numpy(), sr=self.sr) # [Batch, Channels, n_mfccs, n_frames]
+        x_mfccs = librosa.feature.mfcc(y=audio_files.numpy(), sr=self.sr)  # [Batch, Channels, n_mfccs, n_frames]
         x_mfccs = torch.from_numpy(x_mfccs)
 
         # rearrange
@@ -179,7 +163,7 @@ class DigitClassifier():
                 all_pair_wise_dists = torch.cat((all_pair_wise_dists, pair_wise_dists.unsqueeze(0)), dim=0)
 
         # calc mean dist for each test-train pair (over the temporal dimension)
-        mean_dists = all_pair_wise_dists.mean(dim=0).mean(dim=0) # mean over temporal dim and over audio channels
+        mean_dists = all_pair_wise_dists.mean(dim=0).mean(dim=0)  # mean over temporal dim and over audio channels
 
         # mean_dists dim is now [n_test_examples, n_train_examples]
         # For each test example, classify by the minimal distance from train examples
@@ -187,7 +171,6 @@ class DigitClassifier():
         pred_labels = self.train_ds.labels[nn_idx]
 
         return pred_labels.tolist()
-
 
     @abstractmethod
     def classify_using_DTW_distance(self, audio_files: tp.Union[tp.List[str], torch.Tensor]) -> tp.List[int]:
@@ -202,26 +185,15 @@ class DigitClassifier():
 
         # rearrange
         n_test_samples, ch, n_mfccs, n_frames = x_mfccs.shape
-
         n_train_samples, ch_, n_mfccs_, n_frames_ = self.train_ds.features.shape
-
         assert ch_ == ch and n_mfccs_ == n_mfccs_ and n_frames_ == n_frames
 
-
-        # for each temporal mfcc frame - calc pairwise distances
         all_pair_wise_dists = DigitClassifier.DTWdist(x_mfccs, self.train_ds.features.numpy())
 
-        # calc mean dist for each test-train pair (over the temporal dimension)
-
-        # mean_dists dim is now [n_test_examples, n_train_examples]
-        # For each test example, classify by the minimal distance from train examples
         nn_idx = torch.argmin(torch.from_numpy(all_pair_wise_dists), dim=1)
         pred_labels = self.train_ds.labels[nn_idx]
 
-
         return pred_labels.tolist()
-
-
 
     @abstractmethod
     def classify(self, audio_files: tp.List[str]) -> tp.List[str]:
@@ -244,12 +216,10 @@ class DigitClassifier():
 
         for i, audio_file in enumerate(audio_files):
             return_list.append(
-                f"{audio_file} - {dtw_results[i]} - {euclidean_results[i]}"
+                f"{os.path.basename(audio_file)} - {dtw_results[i]} - {euclidean_results[i]}"
             )
 
-        ### TODO - TMP #####
-        evaluate(euclidean_results, dtw_results)
-        ####################
+        # evaluate(euclidean_results, dtw_results)
 
         return return_list
 
@@ -267,35 +237,16 @@ class DigitClassifier():
 
         return_dist = np.zeros((n, m))
 
+        norm = lambda x: x / np.linalg.norm(x)
+        distance = lambda x, y: np.linalg.norm(x - y, ord=1)
+
         for i in range(n):
             for j in range(m):
-                return_dist[i, j], _, _, _ = dtw(batch_1[i], batch_2[j], dist=lambda x, y: np.linalg.norm(x - y, ord=1))
+                return_dist[i, j], _, _, _ = dtw(
+                    norm(batch_1[i]), norm(batch_2[j]), dist=distance
+                )
 
         return return_dist
-
-
-    # def DTW_distance(self, mfcc_1: np.ndarray, mfcc_2: np.ndarray):
-    #     # todo - i didn't check if this function works correctly
-    #
-    #     n = len(mfcc_1)
-    #     m = len(mfcc_2)
-    #     distance_matrix = np.zeros((n, m))
-    #     for i in range(n):
-    #         for j in range(m):
-    #             distance_matrix[i, j] = distance.euclidian(mfcc_1[i],
-    #                                               mfcc_2[j])  # TODO check if the dimensions of the mfcc's makes sense
-    #
-    #     # find optimal path
-    #     DTW_path = []
-    #     i, j = (0, 0)
-    #     while i < n - 1 and j < m - 1:
-    #         neighbors = [(i + 1, j), (i, j + 1), (i + 1, j + 1)]
-    #         distances = [distance_matrix[p] for p in neighbors]
-    #         minimal_step_index = np.argmin(distances)
-    #         i, j = neighbors[minimal_step_index]
-    #         DTW_path.append((i, j))
-    #
-    #     return sum([distance_matrix[p] for p in DTW_path])
 
 
 class ClassifierHandler:
@@ -306,13 +257,23 @@ class ClassifierHandler:
         This function should load a pretrained / tuned 'DigitClassifier' object.
         We will use this object to evaluate your classifications
         """
-        raise NotImplementedError("function is not implemented")
+        ca = ClassifierArgs()
+        ca.path_to_training_data_dir = "./train_files"
+        dc = DigitClassifier(ca)
+        return dc
 
 
-if __name__ == '__main__':
-    ca = ClassifierArgs()
-    ca.path_to_training_data_dir = "./train_files"
-    dc = DigitClassifier(ca)
+
+def calc_output_txt():
+    dc = ClassifierHandler.get_pretrained_model()
     test_list = list_test_files("./test_files")
     classification_res = dc.classify(test_list)
+
+    output = open('output.txt', 'w')
+    for line in classification_res:
+        output.write(line)
+        output.write("\n")
+
     print('completed')
+
+
